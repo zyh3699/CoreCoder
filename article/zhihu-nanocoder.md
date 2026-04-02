@@ -1,16 +1,23 @@
 # 分析完 Claude Code 51 万行源码后，我用 1300 行 Python 重写了它的核心
 
-上一篇文章发出来之后（17 万阅读，感谢大家），评论区问得最多的两类问题：
+前几天 Claude Code 源码泄露之后，本知乎小透明写了第一篇专栏来分析，意外火了（17万阅读，6000收藏）。私信问我最多的两类问题：
 
-一类是"所以 Claude Code 的核心到底怎么实现的？有没有 Python 版的参考实现，我想自己动手理解一下？"
+一类是"所以 Claude Code 的核心到底怎么实现的？有没有 Python 版的参考实现？我想自己动手理解一下，或者想做自己的 Coding Agent。"
 
-另一类是"国内用不了 Anthropic 的 API，DeepSeek/Qwen/Kimi 能不能跑类似的东西？"
+另一类是"搞不到 Anthropic 的 API，Kimi/Gemini/DeepSeek 能不能跑在 Claude Code 上？"
 
 这篇算是交作业了。
 
 ---
 
 ## 先看效果
+
+它会自己读代码、做精准编辑（每次改动输出 unified diff 让你看清改了什么）、跑命令验证、搜索代码库。跟 Claude Code 一样的工作流，但模型你自己选。
+
+项目叫 **NanoCoder**，MIT 协议，GitHub 上完全开源：
+
+**GitHub：https://github.com/he-yufeng/NanoCoder**
+
 
 ```
 $ nanocoder -m kimi-k2.5
@@ -29,12 +36,6 @@ You > 读一下 main.py，修掉拼错的 import
 
 修好了，halper → helper。
 ```
-
-它会自己读代码、做精准编辑（每次改动输出 unified diff 让你看清改了什么）、跑命令验证、搜索代码库。跟 Claude Code 一样的工作流，但模型你自己选。
-
-项目叫 **NanoCoder**，MIT 协议，GitHub 上完全开源：
-
-**GitHub：https://github.com/he-yufeng/NanoCoder**
 
 ---
 
@@ -191,8 +192,8 @@ response = agent.chat("找出项目里所有 TODO 注释")
 
 51 万行源码的核心设计，1300 行 Python 复刻。7 个工具，33 个测试全过。
 
-代码全在 GitHub 上，MIT 协议，fork 了随便改：
+代码全在 GitHub 上，fork 了随便改：
 
 **GitHub：https://github.com/he-yufeng/NanoCoder**
 
-觉得有用的话给个 Star，有问题评论区聊。
+觉得有用的话请给个 Star，这对我很重要。
