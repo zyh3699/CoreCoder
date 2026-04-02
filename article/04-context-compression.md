@@ -1,65 +1,143 @@
 # 第四篇：有限窗口，无限任务
 
-128K token 听起来很多。但一个稍微复杂点的编程任务——"重构这个模块的错误处理"——可能涉及读十几个文件、跑几轮测试、反复修改。每一轮的工具输出都可能几千 token。十几轮之后，128K 就快见底了。
+128K token 听起来很多。但我跟你算一笔账。
 
-Claude Code 没有选择简单的截断（"超出限制就丢掉最早的消息"），而是设计了一套四层压缩策略。我在泄露的源码里找到了四个相关的 Feature Flag：
+一个稍微复杂的编程任务——"重构这个模块的错误处理"。LLM 先要读相关文件：三四个文件，每个几百行，大概 4000-8000 token。然后它改文件、跑测试、看报错、再改。每一轮工具调用的输出少则几百 token（读一个小文件），多则几千 token（跑一次 `npm test` 的完整日志）。十几轮下来，光是工具输出可能就占了 50K-80K token。再加上系统提示词（通常 3K-5K）、历史对话、LLM 的回复，128K 就快见底了。
+
+我第一次用 Claude Code 干大活的时候，它突然说"我需要压缩上下文了"，我以为就是简单截断。读了源码才发现，Claude Code 的上下文管理是我见过的最精细的——**四种不同粒度的压缩机制同时工作**，而且按严格顺序触发，前面能搞定就不动后面。
+
+---
+
+## 四层策略
+
+我在源码里找到了四个相关的 Feature Flag：
 
 ```
-HISTORY_SNIP
-CACHED_MICROCOMPACT
-CONTEXT_COLLAPSE
-REACTIVE_COMPACT (即 Autocompact)
+HISTORY_SNIP          → 第一层：裁工具输出
+CACHED_MICROCOMPACT   → 第二层：缓存式 LLM 摘要
+CONTEXT_COLLAPSE      → 第三层：结构化归档
+REACTIVE_COMPACT      → 第四层：后台自动压缩（即 Autocompact）
 ```
 
-每一层处理不同规模的上下文膨胀，从轻量裁剪到激进压缩。
+### 第一层：HISTORY_SNIP — 删噪声
 
-## 第一层：HISTORY_SNIP — 裁工具输出
+最容易膨胀的不是用户消息，也不是 LLM 回复，而是**工具输出**。
 
-最容易膨胀的不是用户消息，也不是 LLM 回复，而是**工具输出**。一个 `grep` 返回 200 行匹配结果，一个 `cat` 返回整个文件内容，一个 `bash` 跑了个 `npm test` 输出 500 行日志。
+一个 `grep` 搜索返回了 200 行匹配结果，LLM 可能只用了其中 3 行。剩下 197 行就是纯噪声——占着宝贵的上下文位置，但对后续决策毫无用处。
 
-HISTORY_SNIP 做的事情很简单：遍历历史消息，找到所有 `role: "tool"` 的消息，如果内容超过阈值，替换成一个精简版本。精简策略是保留前几行和后几行（最有用的信息通常在开头的命令回显和结尾的总结/错误信息里），中间用 "[snipped N lines]" 替代。
+HISTORY_SNIP 做的事情：遍历历史消息中所有 `role: "tool"` 的结果，如果内容超过阈值，替换成精简版。精简策略是保留前几行和后几行（最有用的信息通常在开头的命令回显和结尾的错误/总结信息里），中间用 `[snipped N lines]` 替代。
 
-这是成本最低的压缩——不需要调用 LLM，不会丢失关键信息，效果立竿见影。
+```
+之前：
+  [tool result] (482 lines)
+  src/auth.py:12: import jwt
+  src/auth.py:34: jwt.decode(token, SECRET)
+  src/auth.py:56: jwt.encode(payload, SECRET)
+  ... (479 more lines of grep results)
 
-NanoCoder 的 `context.py` 里的 `_snip_tool_outputs()` 就是这一层的实现。
+之后：
+  [tool result] (snipped to 6 lines)
+  src/auth.py:12: import jwt
+  src/auth.py:34: jwt.decode(token, SECRET)
+  src/auth.py:56: jwt.encode(payload, SECRET)
+  [snipped 476 lines]
+  src/utils/crypto.py:89: verify_jwt(token)
+  src/utils/crypto.py:102: refresh_jwt(token)
+```
 
-## 第二层：CACHED_MICROCOMPACT — LLM 摘要
+这是成本最低的压缩——不需要调 LLM，不会丢失关键信息（头尾保留），效果立竿见影。一次 grep 的输出从 2000 token 压到 100 token，什么都没丢。
 
-如果第一层裁完还是太长，第二层启动。
+NanoCoder 的 `context.py` 里的 `_snip_tool_outputs()` 是这一层的实现。
 
-这一层拿老的对话片段（比如最早的 10 轮 user-assistant 交互），发给 LLM 做一次摘要："把这段对话压缩成关键信息。保留文件路径、做出的决策、遇到的错误、当前任务状态。"
+### 第二层：CACHED_MICROCOMPACT — 花钱压缩
 
-LLM 返回的摘要通常只有原对话的 1/5 到 1/10。然后用这个摘要替换掉那 10 轮旧对话。
+如果第一层裁完还是太长（因为轮次多，每轮都有有效信息），第二层启动。
 
-"Cached" 指的是这个摘要会被缓存——如果下次又需要压缩，上次的摘要直接用，不用重新调 LLM 生成。
+这一层拿老的对话片段（比如最早的 10 轮交互），发给 LLM 做一次专门的摘要调用：
 
-NanoCoder 的 `_summarize_old()` 实现了这一层。用同一个 LLM 实例来做摘要，如果失败就 fallback 到文本提取。
+```
+System: "把这段对话压缩成关键信息。
+         保留：文件路径、做出的决策、遇到的错误、当前任务状态。
+         丢弃：冗长的工具输出、重复的讨论、格式化的代码。"
 
-## 第三层：CONTEXT_COLLAPSE — 硬压缩
+User: [10 轮旧对话的拼接文本]
+```
 
-如果前两层都做了，token 还是太多（比如用户在一个超长会话里处理多个任务），第三层做最激进的压缩：只保留最近 4-6 条消息，其他全部压缩成一段总结。
+LLM 返回的摘要通常只有原对话的 1/5 到 1/10。然后用这个摘要替换那 10 轮旧对话。
 
-这一层会丢信息。但它比直接截断好：截断是随机的（按时间顺序丢），而 CONTEXT_COLLAPSE 至少会试图保留关键决策和文件路径。
+"Cached" 指的是**摘要会被缓存**。如果下次又需要压缩，上次的摘要直接用，不重新调 LLM。这避免了每次循环迭代都花钱做摘要。
+
+这一层还利用了 Anthropic API 的 `cache_deleted_input_tokens` 能力——在 API 的缓存层面标记某些 token 为"已删除"，不占用 cached token 配额。等于是在不改变消息内容的情况下，把缓存里的空间也省出来了。
+
+NanoCoder 的 `_summarize_old()` 实现了核心逻辑：用同一个 LLM 做摘要，如果 LLM 调用失败就 fallback 到基于正则的关键信息提取（文件路径、错误信息）。
+
+### 第三层：CONTEXT_COLLAPSE — 结构化归档
+
+如果前两层都做了还是不够（用户在一个超长会话里处理了多个不同任务），第三层启动。
+
+CONTEXT_COLLAPSE 和第二层的区别：第二层只是把旧对话变短，结构还在。第三层把旧对话**完全替换**成一段结构化的总结，类似 Git log——每一轮做了什么、结论是什么、修改了哪些文件。
+
+```
+[Context collapsed - 30 turns summarized]
+
+Turn 1-5: Read auth module, identified 3 functions without error handling
+Turn 6-12: Added try/except to verify_token(), refresh_token(), decode_payload()
+Turn 13-15: Ran tests, found regression in test_expired_token
+Turn 16-20: Fixed test, all 47 tests passing
+Turn 21-25: Updated API documentation for new error responses
+Turn 26-30: Code review suggestions applied
+
+Files modified: src/auth.py, tests/test_auth.py, docs/api.md
+Current state: All changes committed, ready for PR
+```
+
+这一层会丢细节。但比简单截断好：截断是按时间顺序砍（最早的先丢），而 CONTEXT_COLLAPSE 至少保留了每轮的决策要点。LLM 不知道具体代码改了什么，但知道"之前改过 auth.py 的错误处理"，不会重复做已经做过的事。
 
 NanoCoder 的 `_hard_collapse()` 是这一层。
 
-## 第四层：Autocompact / REACTIVE_COMPACT — 后台压缩
+### 第四层：Autocompact — 自动驾驶
 
-这是最巧妙的一层。Claude Code 有一个 `/compact` 命令让用户主动触发压缩，但 REACTIVE_COMPACT 是自动的——当系统检测到上下文接近上限时，在用户下一次输入之前自动执行压缩。用户不需要关心 token 管理，系统自己处理。
+Claude Code 有一个 `/compact` 命令让用户主动触发压缩。但 REACTIVE_COMPACT（也叫 Autocompact）是**自动的**：
 
-这一层在 NanoCoder 里对应的是 `maybe_compress()` 的自动触发——每次 `agent.chat()` 开头和每轮工具执行后都会检查是否需要压缩。
+系统在每次调 API 前检查当前 token 用量。如果接近上限，在用户无感知的情况下自动执行压缩。用户不需要关心 token 管理。
+
+NanoCoder 的 `maybe_compress()` 就是这个机制——在 `agent.chat()` 每次循环迭代开头和每轮工具执行后自动检查。
+
+---
 
 ## 压缩的工程权衡
 
-做上下文压缩不难，做好很难。几个 Claude Code 源码里体现的工程考量：
+做上下文压缩最难的不是"怎么压"，而是"压什么"。
 
-**什么信息绝对不能丢？** 文件路径（LLM 需要知道之前编辑了哪些文件）、做出的关键决策（避免重复讨论）、未解决的错误（需要继续处理的问题）。Claude Code 的摘要 prompt 明确列出了这些保留项。
+**什么信息绝对不能丢？**
 
-**摘要本身占多少 token？** 如果摘要太长，压缩的意义就打折了。Claude Code 对摘要长度有隐含控制——通过 `max_tokens` 参数限制摘要 LLM 调用的输出长度。
+文件路径——LLM 需要知道之前编辑了哪些文件，不然可能重复读取或覆盖。做出的关键决策——"用户说不要改 config.yaml"这种指令如果被压掉了，LLM 就可能违反。未解决的错误——正在处理的 bug 信息如果丢了，LLM 会从头排查。
 
-**用什么模型做摘要？** Claude Code 用的是同一个模型。这意味着每次压缩都有一次额外的 API 调用成本。NanoCoder 也是这样做的——用 `self.llm` 做摘要。如果你想省钱，可以换一个便宜的模型专门做摘要。
+Claude Code 的摘要 prompt 里明确列出了这些保留项。NanoCoder 也是。
 
-**压缩后 LLM 会不会"忘记"之前同意做的事？** 这是最大的风险。如果压缩过程中丢掉了"用户说不要修改 config.yaml"这样的指令，LLM 可能就去改了。Claude Code 的解法是在摘要 prompt 里强调"保留用户指令和约束"。
+**摘要本身占多少 token？**
+
+如果摘要写太长，压缩就白做了。Claude Code 通过 `max_tokens` 参数限制摘要调用的输出长度。NanoCoder 把摘要调用的 prompt 限制在 15000 字符以内。
+
+**压缩后 LLM 会不会"忘记"承诺？**
+
+这是最大的风险。你说"帮我改完 auth 模块后跑一次全量测试"，前半句被 LLM 做完了，后半句在压缩时被摘要吸收了，LLM 可能就忘了跑测试。
+
+Claude Code 的策略是在摘要 prompt 里强调"保留用户明确要求的操作和约束"。但这不是 100% 可靠的——摘要 LLM 本身也可能犯错。这是一个已知的不完美，目前没有完美解。
+
+**用什么模型做摘要？**
+
+Claude Code 用的是同一个模型。一次摘要调用的成本 ≈ 一次正常对话的成本。NanoCoder 也是这样。如果你想省钱，可以用一个便宜的模型专门做摘要（比如用 DeepSeek 做主力但用 GPT-4o-mini 做摘要）。
+
+---
+
+## 信息的"保质期"不一样
+
+读完上下文管理这部分代码，我最大的感触是：**不同信息的保质期不一样，应该用不同的策略处理。**
+
+工具的中间输出几轮之后就没用了（grep 结果在你找到要改的文件后就不再需要）。但用户描述的需求背景可能整个会话都要保留。LLM 上一轮的思考过程可以扔掉，但它做出的决策（"我选择用 try/except 而不是 if/else"）应该保留。
+
+Claude Code 的四层策略本质上就是在按"保质期"分级处理：第一层丢最短命的（冗长的工具输出），最后一层才动最长命的（对话结构和决策历史）。
 
 ---
 

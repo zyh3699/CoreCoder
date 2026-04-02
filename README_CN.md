@@ -11,7 +11,7 @@
 
 于是我从零重写了核心架构。**NanoCoder 就是把所有不承重的部分拆掉之后剩下的东西。** 每个文件一屏看完，每个设计决策都来自生产级系统的实战验证。
 
-[English](README.md) | [中文](README_CN.md) | [Claude Code 源码导读（16篇系列）](article/)
+[English](README.md) | [中文](README_CN.md) | [Claude Code 源码导读（7篇系列）](article/)
 
 ## 它能干什么
 

@@ -11,7 +11,7 @@ I spent a weekend reading through the leaked Claude Code source — all half a m
 
 So I rebuilt the essential architecture from scratch. **NanoCoder is what's left when you strip away everything that isn't load-bearing.** Every file fits on one screen. Every design decision comes from a battle-tested production system.
 
-[English](README.md) | [中文](README_CN.md) | [Claude Code Source Guide (16-part series)](article/)
+[English](README.md) | [中文](README_CN.md) | [Claude Code Source Guide (7-part series)](article/)
 
 ## What Can It Actually Do?
 
@@ -169,7 +169,7 @@ Resume a session: `nanocoder -r <session_id>`
 
 ## The Source Guide
 
-I also wrote a [16-part deep dive](article/) into Claude Code's architecture — covering everything from the agent loop to the permission system to the unreleased features hidden behind feature flags. If you want to understand *why* NanoCoder is built the way it is, start there.
+I also wrote a [7-part deep dive](article/) into Claude Code's architecture — covering everything from the agent loop to the permission system to the unreleased features hidden behind feature flags. If you want to understand *why* NanoCoder is built the way it is, start there.
 
 ## License
 
