@@ -8,7 +8,7 @@ from corecoder.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
-    assert len(ALL_TOOLS) == 13
+    assert len(ALL_TOOLS) == 19
 
 
 def test_all_tools_have_valid_schema():
@@ -194,3 +194,43 @@ def test_agent_tool_schema():
     s = agent_t.schema()
     assert s["function"]["name"] == "agent"
     assert "task" in s["function"]["parameters"]["properties"]
+
+
+def test_sample_rows_tool_schema():
+    tool = get_tool("sample_rows")
+    s = tool.schema()
+    assert s["function"]["name"] == "sample_rows"
+    assert "sample_size" in s["function"]["parameters"]["properties"]
+
+
+def test_discover_taxonomy_tool_schema():
+    tool = get_tool("discover_taxonomy")
+    s = tool.schema()
+    assert s["function"]["name"] == "discover_taxonomy"
+    assert "goal" in s["function"]["parameters"]["properties"]
+
+
+def test_assign_taxonomy_tool_schema():
+    tool = get_tool("assign_taxonomy")
+    s = tool.schema()
+    assert s["function"]["name"] == "assign_taxonomy"
+    assert "taxonomy" in s["function"]["parameters"]["properties"]
+
+
+def test_discover_issue_phrases_tool_schema():
+    tool = get_tool("discover_issue_phrases")
+    s = tool.schema()
+    assert s["function"]["name"] == "discover_issue_phrases"
+    assert "phrase_style" in s["function"]["parameters"]["properties"]
+
+
+def test_cache_status_tool_schema():
+    tool = get_tool("cache_status")
+    s = tool.schema()
+    assert s["function"]["name"] == "cache_status"
+
+
+def test_invalidate_cache_tool_schema():
+    tool = get_tool("invalidate_cache")
+    s = tool.schema()
+    assert s["function"]["name"] == "invalidate_cache"

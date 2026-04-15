@@ -8,6 +8,7 @@ from corecoder import Agent, LLM, Config, ALL_TOOLS, __version__
 from corecoder.context import ContextManager, estimate_tokens
 from corecoder.session import save_session, load_session, list_sessions
 from corecoder.tools import get_tool
+from corecoder.db.workspace import get_workspace, reset_workspace
 
 
 def test_version():
@@ -19,7 +20,7 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 13
+    assert len(ALL_TOOLS) == 19
 
 
 def test_config_from_env():
@@ -97,6 +98,27 @@ def test_session_not_found():
 def test_list_sessions():
     sessions = list_sessions()
     assert isinstance(sessions, list)
+
+
+def test_agent_reset_workspace_recreates_shared_workspace():
+    llm = LLM.__new__(LLM)
+    llm.model = "fake"
+    llm.total_prompt_tokens = 0
+    llm.total_completion_tokens = 0
+    agent = Agent.__new__(Agent)
+    agent.llm = llm
+    agent.messages = []
+    agent.workspace = get_workspace()
+    agent.workspace.llm = llm
+    agent.workspace.conn.execute("CREATE TABLE t(x INTEGER)")
+    agent.reset_workspace()
+    ws = get_workspace()
+    assert ws.llm is llm
+    out = ws.conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='t'"
+    ).fetchone()[0]
+    assert out == 0
+    reset_workspace()
 
 
 # --- Cost estimation ---

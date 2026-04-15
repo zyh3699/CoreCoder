@@ -30,6 +30,125 @@ class FakeLLM:
         return json.dumps({"value": self._label_fn(user)})
 
 
+class WorkflowLLM:
+    """Fake LLM that can handle taxonomy discovery plus assignment."""
+
+    def __init__(self):
+        self.model = "workflow-fake"
+        self.calls = 0
+
+    def complete_json(self, system, user):
+        self.calls += 1
+        if "categories, recommended_column_name" in system:
+            if '"taxonomy_shape": "hierarchical"' in user:
+                return json.dumps(
+                    {
+                        "categories": [
+                            {
+                                "parent_label": "usage_issues",
+                                "parent_definition": "Problems with how the product feels or behaves during use",
+                                "children": [
+                                    {"child_label": "pilling", "child_definition": "Product rolls up or forms residue"},
+                                    {"child_label": "sticky_heavy", "child_definition": "Texture feels sticky, greasy, or heavy"},
+                                    {"child_label": "other", "child_definition": "Other usage issue"},
+                                ],
+                            },
+                            {
+                                "parent_label": "expectation_gap",
+                                "parent_definition": "Product does not deliver the promised value or result",
+                                "children": [
+                                    {"child_label": "not_worth_price", "child_definition": "Too expensive for the result"},
+                                    {"child_label": "no_effect", "child_definition": "Little or no visible benefit"},
+                                    {"child_label": "other", "child_definition": "Other expectation gap"},
+                                ],
+                            },
+                            {
+                                "parent_label": "safety_irritation",
+                                "parent_definition": "Signs of irritation or poor skin tolerance",
+                                "children": [
+                                    {"child_label": "stinging_allergy", "child_definition": "Stinging, itching, redness, or allergic reaction"},
+                                    {"child_label": "other", "child_definition": "Other irritation complaint"},
+                                ],
+                            },
+                        ],
+                        "recommended_column_name": "complaint_angle",
+                        "assignment_prompt": "Assign each post to one parent angle and one child angle.",
+                        "notes": "Use parent angles for overview and child angles for drill-down.",
+                    }
+                )
+            return json.dumps(
+                {
+                    "categories": [
+                        {"label": "texture_issue", "definition": "Complaints about sticky, heavy, or pilling texture"},
+                        {"label": "irritation", "definition": "Complaints about allergy, stinging, or irritation"},
+                        {"label": "value", "definition": "Complaints that the product is not worth the price"},
+                        {"label": "other", "definition": "Anything else"},
+                    ],
+                    "recommended_column_name": "complaint_angle",
+                    "assignment_prompt": "Classify each post into exactly one complaint angle.",
+                    "notes": "Use this taxonomy for full-set assignment.",
+                }
+            )
+        if "phrases, recommended_column_name" in system:
+            return json.dumps(
+                {
+                    "phrases": [
+                        {
+                            "canonical_phrase": "pilling",
+                            "definition": "Product rolls up, pills, or clashes with layering",
+                            "variants": ["causes pilling", "rolls up", "pills on skin"],
+                            "example_rids": [1],
+                            "parent_angle": "usage_issues",
+                        },
+                        {
+                            "canonical_phrase": "sticky_heavy",
+                            "definition": "Texture feels sticky, greasy, or heavy",
+                            "variants": ["sticky", "greasy", "heavy"],
+                            "example_rids": [4],
+                            "parent_angle": "usage_issues",
+                        },
+                        {
+                            "canonical_phrase": "not_worth_price",
+                            "definition": "Too expensive for the result",
+                            "variants": ["too expensive", "not worth the price"],
+                            "example_rids": [2],
+                            "parent_angle": "expectation_gap",
+                        },
+                        {
+                            "canonical_phrase": "stinging_allergy",
+                            "definition": "Stinging, itching, redness, or allergic reaction",
+                            "variants": ["sting", "itch", "allergy"],
+                            "example_rids": [3],
+                            "parent_angle": "safety_irritation",
+                        },
+                    ],
+                    "recommended_column_name": "issue_phrase",
+                    "assignment_prompt": "Assign each post to exactly one canonical issue phrase.",
+                    "notes": "Use parent_angle for drill-down from broad complaint classes.",
+                }
+            )
+        row_text = user.split("Row text:\n", 1)[-1]
+        lowered = row_text.lower()
+        if 'Allowed taxonomy pairs:' in user:
+            if "itch" in lowered or "sting" in lowered:
+                return json.dumps({"value": {"parent": "safety_irritation", "child": "stinging_allergy"}})
+            if "sticky" in lowered or "greasy" in lowered or "heavy" in lowered:
+                child = "pilling" if "pilling" in lowered else "sticky_heavy"
+                return json.dumps({"value": {"parent": "usage_issues", "child": child}})
+            if "expensive" in lowered or "worth" in lowered or "price" in lowered:
+                return json.dumps({"value": {"parent": "expectation_gap", "child": "not_worth_price"}})
+            return json.dumps({"value": {"parent": "usage_issues", "child": "other"}})
+        if "allergy" in lowered or "itch" in lowered or "sting" in lowered:
+            label = "irritation"
+        elif "sticky" in lowered or "pilling" in lowered or "greasy" in lowered:
+            label = "texture_issue"
+        elif "expensive" in lowered or "worth" in lowered or "price" in lowered:
+            label = "value"
+        else:
+            label = "other"
+        return json.dumps({"value": label})
+
+
 @pytest.fixture
 def workspace(tmp_path):
     ws = Workspace(cache_path=tmp_path / "cache.db")
@@ -47,6 +166,20 @@ def posts_csv(tmp_path):
         "2,bob,Terrible experience will not buy again,3\n"
         "3,carol,It is okay I guess,15\n"
         "4,dave,Absolutely amazing service,200\n"
+    )
+    return p
+
+
+@pytest.fixture
+def complaint_posts_csv(tmp_path):
+    p = tmp_path / "complaints.csv"
+    p.write_text(
+        "id,content,sentiment\n"
+        "1,This cream feels sticky and causes pilling,neg\n"
+        "2,Way too expensive for the effect,neg\n"
+        "3,My skin started to sting and itch,neg\n"
+        "4,Texture is greasy and heavy,neg\n"
+        "5,Actually hydrates pretty well,pos\n"
     )
     return p
 
@@ -201,3 +334,171 @@ def test_derive_column_missing_table(workspace):
         prompt="x", output_type="string",
     )
     assert "not loaded" in r
+
+
+def test_sample_rows_random(workspace, complaint_posts_csv):
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    sample = get_tool("sample_rows")
+    out = sample.execute(
+        table="posts",
+        sample_size=2,
+        where="sentiment = 'neg'",
+        method="random",
+        columns=["content", "sentiment"],
+    )
+    assert "Sampled 2 rows" in out
+    assert "population=4" in out
+    assert "content" in out
+
+
+def test_discover_taxonomy(workspace, complaint_posts_csv):
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    discover = get_tool("discover_taxonomy")
+    out = discover.execute(
+        table="posts",
+        text_column="content",
+        goal="negative_problem_angles",
+        where="sentiment = 'neg'",
+        sample_size=4,
+        max_categories=4,
+    )
+    assert "Discovered candidate taxonomy" in out
+    assert "texture_issue" in out
+    assert "complaint_angle" in out
+
+
+def test_discover_taxonomy_hierarchical(workspace, complaint_posts_csv):
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    discover = get_tool("discover_taxonomy")
+    out = discover.execute(
+        table="posts",
+        text_column="content",
+        goal="negative_problem_angles",
+        where="sentiment = 'neg'",
+        sample_size=4,
+        taxonomy_shape="hierarchical",
+        granularity_preference="both",
+        max_parent_categories=3,
+        max_child_categories_per_parent=3,
+    )
+    assert "usage_issues" in out
+    assert "pilling" in out
+    assert '"parent": "usage_issues"' in out
+
+
+def test_assign_taxonomy_materializes_and_is_queryable(workspace, complaint_posts_csv):
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    assign = get_tool("assign_taxonomy")
+    out = assign.execute(
+        table="posts",
+        text_column="content",
+        new_column="complaint_angle",
+        goal="negative_problem_angles",
+        taxonomy=["texture_issue", "irritation", "value", "other"],
+        category_definitions={
+            "texture_issue": "Sticky, greasy, heavy, or pilling texture complaints",
+            "irritation": "Stinging, allergy, redness, or irritation complaints",
+            "value": "Too expensive or not worth the price",
+            "other": "Anything else",
+        },
+        where="sentiment = 'neg'",
+    )
+    assert 'Wrote column "complaint_angle"' in out
+    sql = get_tool("sql_query")
+    agg = sql.execute(
+        query=(
+            "SELECT complaint_angle, COUNT(*) AS n "
+            "FROM posts WHERE sentiment = 'neg' GROUP BY complaint_angle ORDER BY n DESC"
+        )
+    )
+    assert "texture_issue" in agg
+    assert "irritation" in agg
+    assert "value" in agg
+
+
+def test_assign_taxonomy_hierarchical_materializes_and_is_queryable(workspace, complaint_posts_csv):
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    assign = get_tool("assign_taxonomy")
+    out = assign.execute(
+        table="posts",
+        text_column="content",
+        new_column="unused_flat_column",
+        new_column_parent="complaint_angle_l1",
+        new_column_child="complaint_angle_l2",
+        goal="negative_problem_angles",
+        taxonomy_shape="hierarchical",
+        taxonomy=[
+            {"parent": "usage_issues", "child": "pilling", "definition": "Product rolls up or forms residue"},
+            {"parent": "usage_issues", "child": "sticky_heavy", "definition": "Texture feels sticky, greasy, or heavy"},
+            {"parent": "expectation_gap", "child": "not_worth_price", "definition": "Too expensive for the result"},
+            {"parent": "safety_irritation", "child": "stinging_allergy", "definition": "Stinging, itching, redness, or allergy"},
+            {"parent": "usage_issues", "child": "other", "definition": "Other usage issue"},
+        ],
+        where="sentiment = 'neg'",
+    )
+    assert 'Wrote hierarchical columns "complaint_angle_l1" and "complaint_angle_l2"' in out
+    sql = get_tool("sql_query")
+    agg = sql.execute(
+        query=(
+            "SELECT complaint_angle_l1, complaint_angle_l2, COUNT(*) AS n "
+            "FROM posts WHERE sentiment = 'neg' GROUP BY 1, 2 ORDER BY n DESC"
+        )
+    )
+    assert "usage_issues" in agg
+    assert "pilling" in agg
+    assert "sticky_heavy" in agg
+    assert "not_worth_price" in agg
+    assert "stinging_allergy" in agg
+
+
+def test_discover_issue_phrases(workspace, complaint_posts_csv):
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    phrase_tool = get_tool("discover_issue_phrases")
+    out = phrase_tool.execute(
+        table="posts",
+        text_column="content",
+        goal="negative_issue_phrases",
+        where="sentiment = 'neg'",
+        parent_angle_column="sentiment",
+        parent_angle_value="neg",
+        sample_size=4,
+        max_phrases=4,
+        phrase_style="canonical_issue",
+    )
+    assert "Discovered candidate issue phrases" in out
+    assert "pilling" in out
+    assert "sticky_heavy" in out
+    assert '"label": "stinging_allergy"' in out
+
+
+def test_cache_status_and_invalidate_cache(workspace, complaint_posts_csv):
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    assign = get_tool("assign_taxonomy")
+    assign.execute(
+        table="posts",
+        text_column="content",
+        new_column="issue_phrase",
+        goal="negative_issue_phrases",
+        taxonomy=["texture_issue", "irritation", "value", "other"],
+        category_definitions={
+            "texture_issue": "Sticky, greasy, heavy, or pilling texture complaints",
+            "irritation": "Stinging, allergy, redness, or irritation complaints",
+            "value": "Too expensive or not worth the price",
+            "other": "Anything else",
+        },
+        where="sentiment = 'neg'",
+    )
+    status = get_tool("cache_status")
+    out = status.execute(table="posts", column="issue_phrase")
+    assert "issue_phrase" in out
+    invalid = get_tool("invalidate_cache")
+    cleared = invalid.execute(table="posts", column="issue_phrase")
+    assert "Deleted cache rows:" in cleared
+    out2 = status.execute(table="posts", column="issue_phrase")
+    assert "No matching cache entries" in out2

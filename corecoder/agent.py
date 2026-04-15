@@ -16,7 +16,7 @@ from .tools.base import Tool
 from .tools.agent import AgentTool
 from .prompt import system_prompt
 from .context import ContextManager
-from .db.workspace import get_workspace
+from .db.workspace import get_workspace, reset_workspace
 
 
 class Agent:
@@ -127,3 +127,9 @@ class Agent:
     def reset(self):
         """Clear conversation history."""
         self.messages.clear()
+
+    def reset_workspace(self):
+        """Clear the shared AI-DB workspace and reattach the current LLM."""
+        reset_workspace()
+        self.workspace = get_workspace()
+        self.workspace.llm = self.llm

@@ -13,6 +13,12 @@ from .derive_column import DeriveColumnTool
 from .export_table import ExportTableTool
 from .classify_column import ClassifyColumnTool
 from .discover_topics import DiscoverTopicsTool
+from .sample_rows import SampleRowsTool
+from .discover_taxonomy import DiscoverTaxonomyTool
+from .assign_taxonomy import AssignTaxonomyTool
+from .discover_issue_phrases import DiscoverIssuePhrasesTool
+from .cache_status import CacheStatusTool
+from .invalidate_cache import InvalidateCacheTool
 
 ALL_TOOLS = [
     BashTool(),
@@ -29,6 +35,12 @@ ALL_TOOLS = [
     ExportTableTool(),
     ClassifyColumnTool(),
     DiscoverTopicsTool(),
+    SampleRowsTool(),
+    DiscoverTaxonomyTool(),
+    AssignTaxonomyTool(),
+    DiscoverIssuePhrasesTool(),
+    CacheStatusTool(),
+    InvalidateCacheTool(),
 ]
 
 

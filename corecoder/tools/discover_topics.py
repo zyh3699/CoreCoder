@@ -27,11 +27,14 @@ _OUTLIER_LABEL = "other"
 class DiscoverTopicsTool(Tool):
     name = "discover_topics"
     description = (
-        "Discover discussion topics in a text column via BERTopic (local embeddings + "
-        "clustering).  Calls the LLM only once per discovered topic to generate a "
-        "human-readable label — NOT once per row.  Writes topic_id and topic_label "
+        "Explore open-ended discussion topics in a text column via BERTopic (local "
+        "embeddings + clustering). Calls the LLM only once per discovered topic to "
+        "generate a readable label — NOT once per row. Use this only for exploratory topic "
+        "mapping or when the user explicitly asks for topics/themes. Do NOT use it for "
+        "final issue-angle attribution, pain-point extraction, or concrete talking angles. "
+        "Writes topic_id and topic_label "
         "columns back to the table so sql_query can aggregate them. "
-        "Use where= to focus on a subset (e.g. WHERE sentiment='neg')."
+        "Use where= to focus on a subset (e.g. sentiment='neg')."
     )
     parameters = {
         "type": "object",

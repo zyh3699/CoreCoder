@@ -87,6 +87,11 @@ class DeriveColumnTool(Tool):
                     "the column.  Use this first to check the taxonomy."
                 ),
             },
+            "rerun_mode": {
+                "type": "string",
+                "enum": ["reuse", "refresh", "no_write_cache"],
+                "description": "Whether to reuse cache, refresh labels, or skip writing new cache entries.",
+            },
         },
         "required": ["table", "new_column", "source_columns", "prompt", "output_type"],
     }
@@ -100,6 +105,7 @@ class DeriveColumnTool(Tool):
         output_type: str,
         enum_values: list[str] | None = None,
         sample_size: int | None = None,
+        rerun_mode: str = "reuse",
     ) -> str:
         if not _is_ident(table) or not _is_ident(new_column):
             return "Error: table and new_column must be valid SQL identifiers"
@@ -123,7 +129,11 @@ class DeriveColumnTool(Tool):
         schema_str = json.dumps(
             {"type": output_type, "enum": enum_values}, sort_keys=True, ensure_ascii=False
         )
+        if rerun_mode not in {"reuse", "refresh", "no_write_cache"}:
+            return "Error: rerun_mode must be one of reuse, refresh, no_write_cache"
         model = ws.llm.model
+        schema_hash = ws.cache.hash_text(schema_str)
+        source_cols_str = ",".join(source_columns)
 
         col_list = ", ".join(f'"{c}"' for c in source_columns)
         base_q = f'SELECT _rid, {col_list} FROM "{table}" ORDER BY _rid'
@@ -140,7 +150,7 @@ class DeriveColumnTool(Tool):
             content = dict(zip(source_columns, r[1:]))
             content_json = json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
             key = ws.cache.make_key(table, content_json, prompt, schema_str, model)
-            cached = ws.cache.get(key)
+            cached = None if rerun_mode != "reuse" else ws.cache.get(key)
             if cached is not None:
                 hits[rid] = cached
             else:
@@ -171,8 +181,20 @@ class DeriveColumnTool(Tool):
                     results[rid] = value
                     if value is None:
                         errors += 1
-                    else:
-                        ws.cache.put(key, table, new_column, str(rid), value, model)
+                    elif rerun_mode != "no_write_cache":
+                        ws.cache.put(
+                            key,
+                            table,
+                            new_column,
+                            str(rid),
+                            value,
+                            model,
+                            tool_name=self.name,
+                            goal=new_column,
+                            schema_hash=schema_hash,
+                            prompt_preview=prompt[:160],
+                            source_columns=source_cols_str,
+                        )
 
         values_list = [results.get(r[0]) for r in rows]
         dist = _distribution(values_list)

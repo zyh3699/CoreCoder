@@ -47,6 +47,11 @@ class ClassifyColumnTool(Tool):
                 "type": "integer",
                 "description": "Rows per inference batch (default 32)",
             },
+            "rerun_mode": {
+                "type": "string",
+                "enum": ["reuse", "refresh", "no_write_cache"],
+                "description": "Whether to reuse cache, refresh results, or skip writing new cache entries.",
+            },
         },
         "required": ["table", "source_column", "new_column", "model_name"],
     }
@@ -61,6 +66,7 @@ class ClassifyColumnTool(Tool):
         new_column: str,
         model_name: str,
         batch_size: int = 32,
+        rerun_mode: str = "reuse",
     ) -> str:
         ws = get_workspace()
         if table not in ws.tables:
@@ -72,6 +78,8 @@ class ClassifyColumnTool(Tool):
 
         if model_name not in _SUPPORTED:
             return f"Error: unknown model '{model_name}'. Supported: {_SUPPORTED}"
+        if rerun_mode not in {"reuse", "refresh", "no_write_cache"}:
+            return "Error: rerun_mode must be one of reuse, refresh, no_write_cache"
 
         # fetch rows
         rows = ws.conn.execute(
@@ -79,6 +87,7 @@ class ClassifyColumnTool(Tool):
         ).fetchall()
 
         schema_str = json.dumps({"model": model_name}, sort_keys=True)
+        schema_hash = ws.cache.hash_text(schema_str)
 
         # partition into cache hits vs. work
         hits: dict[int, str] = {}
@@ -86,7 +95,7 @@ class ClassifyColumnTool(Tool):
         for rid, text in rows:
             text_str = "" if text is None else str(text)
             key = ws.cache.make_key(table, text_str, model_name, schema_str, model_name)
-            cached = ws.cache.get(key)
+            cached = None if rerun_mode != "reuse" else ws.cache.get(key)
             if cached is not None:
                 hits[rid] = cached
             else:
@@ -114,7 +123,20 @@ class ClassifyColumnTool(Tool):
                     key = ws.cache.make_key(
                         table, text_str, model_name, schema_str, model_name
                     )
-                    ws.cache.put(key, table, new_column, str(rid), label, model_name)
+                    if rerun_mode != "no_write_cache":
+                        ws.cache.put(
+                            key,
+                            table,
+                            new_column,
+                            str(rid),
+                            label,
+                            model_name,
+                            tool_name=self.name,
+                            goal=new_column,
+                            schema_hash=schema_hash,
+                            prompt_preview=model_name,
+                            source_columns=source_column,
+                        )
 
         results = {**hits, **new_labels}
 

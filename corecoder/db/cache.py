@@ -29,6 +29,11 @@ class DerivedCache:
                 row_key    TEXT,
                 value      TEXT,
                 model      TEXT,
+                tool_name  TEXT DEFAULT '',
+                goal       TEXT DEFAULT '',
+                schema_hash TEXT DEFAULT '',
+                prompt_preview TEXT DEFAULT '',
+                source_columns TEXT DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -36,7 +41,24 @@ class DerivedCache:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tc ON derived(table_name, column_name)"
         )
+        self._ensure_columns()
         self.conn.commit()
+
+    def _ensure_columns(self):
+        cols = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(derived)").fetchall()
+        }
+        wanted = {
+            "tool_name": "TEXT DEFAULT ''",
+            "goal": "TEXT DEFAULT ''",
+            "schema_hash": "TEXT DEFAULT ''",
+            "prompt_preview": "TEXT DEFAULT ''",
+            "source_columns": "TEXT DEFAULT ''",
+        }
+        for name, ddl in wanted.items():
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE derived ADD COLUMN {name} {ddl}")
 
     @staticmethod
     def make_key(table: str, row_content: str, prompt: str, schema: str, model: str) -> str:
@@ -57,13 +79,42 @@ class DerivedCache:
         except json.JSONDecodeError:
             return None
 
-    def put(self, key: str, table: str, column: str, row_key: str, value: Any, model: str):
+    @staticmethod
+    def hash_text(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def put(
+        self,
+        key: str,
+        table: str,
+        column: str,
+        row_key: str,
+        value: Any,
+        model: str,
+        tool_name: str = "",
+        goal: str = "",
+        schema_hash: str = "",
+        prompt_preview: str = "",
+        source_columns: str = "",
+    ):
         with self._lock:
             self.conn.execute(
                 "INSERT OR REPLACE INTO derived"
-                "(cache_key,table_name,column_name,row_key,value,model)"
-                " VALUES (?,?,?,?,?,?)",
-                (key, table, column, row_key, json.dumps(value, ensure_ascii=False), model),
+                "(cache_key,table_name,column_name,row_key,value,model,tool_name,goal,schema_hash,prompt_preview,source_columns)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    key,
+                    table,
+                    column,
+                    row_key,
+                    json.dumps(value, ensure_ascii=False),
+                    model,
+                    tool_name,
+                    goal,
+                    schema_hash,
+                    prompt_preview,
+                    source_columns,
+                ),
             )
             self.conn.commit()
 
@@ -73,3 +124,76 @@ class DerivedCache:
             (table, column),
         ).fetchone()
         return row[0] if row else 0
+
+    def list_entries(
+        self,
+        table: str | None = None,
+        column: str | None = None,
+        tool_name: str | None = None,
+        goal: str | None = None,
+        model: str | None = None,
+    ) -> list[dict]:
+        clauses = []
+        params: list[str] = []
+        for field, value in (
+            ("table_name", table),
+            ("column_name", column),
+            ("tool_name", tool_name),
+            ("goal", goal),
+            ("model", model),
+        ):
+            if value:
+                clauses.append(f"{field}=?")
+                params.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            "SELECT table_name, column_name, tool_name, goal, model, schema_hash, "
+            "source_columns, MIN(created_at), MAX(created_at), COUNT(*) "
+            f"FROM derived{where} "
+            "GROUP BY table_name, column_name, tool_name, goal, model, schema_hash, source_columns "
+            "ORDER BY COUNT(*) DESC, MAX(created_at) DESC",
+            params,
+        ).fetchall()
+        out = []
+        for row in rows:
+            out.append(
+                {
+                    "table_name": row[0],
+                    "column_name": row[1],
+                    "tool_name": row[2],
+                    "goal": row[3],
+                    "model": row[4],
+                    "schema_hash": row[5],
+                    "source_columns": row[6],
+                    "created_min": row[7],
+                    "created_max": row[8],
+                    "count": row[9],
+                }
+            )
+        return out
+
+    def delete_entries(
+        self,
+        table: str | None = None,
+        column: str | None = None,
+        tool_name: str | None = None,
+        goal: str | None = None,
+        model: str | None = None,
+    ) -> int:
+        clauses = []
+        params: list[str] = []
+        for field, value in (
+            ("table_name", table),
+            ("column_name", column),
+            ("tool_name", tool_name),
+            ("goal", goal),
+            ("model", model),
+        ):
+            if value:
+                clauses.append(f"{field}=?")
+                params.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            cur = self.conn.execute(f"DELETE FROM derived{where}", params)
+            self.conn.commit()
+        return cur.rowcount

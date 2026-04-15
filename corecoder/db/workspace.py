@@ -57,6 +57,13 @@ class Workspace:
             )
         return "\n".join(lines)
 
+    def close(self) -> None:
+        """Close the in-memory DuckDB connection."""
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
 
 _WORKSPACE: Workspace | None = None
 
@@ -77,4 +84,6 @@ def set_workspace(ws: Workspace) -> None:
 def reset_workspace() -> None:
     """Used by tests to get a clean slate."""
     global _WORKSPACE
+    if _WORKSPACE is not None:
+        _WORKSPACE.close()
     _WORKSPACE = None

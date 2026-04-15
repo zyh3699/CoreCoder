@@ -156,6 +156,10 @@ def _repl(agent: Agent, config: Config):
             agent.reset()
             console.print("[yellow]Conversation reset.[/yellow]")
             continue
+        if user_input == "/dbreset":
+            agent.reset_workspace()
+            console.print("[yellow]AI-DB workspace reset.[/yellow]")
+            continue
         if user_input == "/tokens":
             p = agent.llm.total_prompt_tokens
             c = agent.llm.total_completion_tokens
@@ -235,6 +239,7 @@ def _show_help():
         "[bold]Commands:[/bold]\n"
         "  /help          Show this help\n"
         "  /reset         Clear conversation history\n"
+        "  /dbreset       Clear loaded AI-DB tables and in-memory analysis state\n"
         "  /model         Show current model\n"
         "  /model <name>  Switch model mid-conversation\n"
         "  /tokens        Show token usage\n"
