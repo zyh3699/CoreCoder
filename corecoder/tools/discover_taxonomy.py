@@ -107,6 +107,7 @@ class DiscoverTaxonomyTool(Tool):
             return "Error: taxonomy_shape must be one of flat, hierarchical"
         if granularity_preference not in {"broad", "fine", "both"}:
             return "Error: granularity_preference must be one of broad, fine, both"
+        target_polarity = _infer_target_polarity(goal, where)
 
         note = ""
         order_clause = " ORDER BY random()"
@@ -144,6 +145,7 @@ class DiscoverTaxonomyTool(Tool):
         user = json.dumps(
             {
                 "goal": goal,
+                "target_polarity": target_polarity,
                 "max_categories": max_categories,
                 "taxonomy_shape": taxonomy_shape,
                 "granularity_preference": granularity_preference,
@@ -156,7 +158,9 @@ class DiscoverTaxonomyTool(Tool):
                     "Propose categories that are useful for later SQL aggregation.",
                     "Prefer business/actionable angles over entity names or loose keywords.",
                     "Keep categories single-axis and easy to distinguish.",
-                    "If include_other is true, include an 'other' catch-all category.",
+                    "If target_polarity is provided, ignore sampled rows that are clearly outside that polarity instead of letting them influence the taxonomy.",
+                    "Cover the on-target sample with meaningful labels before using 'other'.",
+                    "If include_other is true, include an 'other' catch-all category only for residual minority cases, not as the dominant outcome.",
                     "If taxonomy_shape is hierarchical, make parent categories broad enough for overview reporting and child categories specific enough for drill-down analysis.",
                     "Write assignment_prompt as a direct instruction for labeling one row into exactly one category.",
                 ],
@@ -262,3 +266,12 @@ def _render_categories(categories, taxonomy_shape: str) -> tuple[list[str], list
             )
         payload.extend(child_payload)
     return rendered, payload
+
+
+def _infer_target_polarity(goal: str, where: str | None) -> str | None:
+    text = " ".join([goal, where or ""]).lower()
+    if any(tok in text for tok in ["negative", "complaint", "neg", "label_0", "吐槽", "负面", "差评"]):
+        return "negative"
+    if any(tok in text for tok in ["positive", "praise", "selling", "pos", "label_2", "label_1", "正面", "卖点", "好评"]):
+        return "positive"
+    return None

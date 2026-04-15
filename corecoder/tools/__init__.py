@@ -19,6 +19,8 @@ from .assign_taxonomy import AssignTaxonomyTool
 from .discover_issue_phrases import DiscoverIssuePhrasesTool
 from .cache_status import CacheStatusTool
 from .invalidate_cache import InvalidateCacheTool
+from .materialize_subset import MaterializeSubsetTool
+from .embed_column import EmbedColumnTool
 
 ALL_TOOLS = [
     BashTool(),
@@ -41,6 +43,8 @@ ALL_TOOLS = [
     DiscoverIssuePhrasesTool(),
     CacheStatusTool(),
     InvalidateCacheTool(),
+    MaterializeSubsetTool(),
+    EmbedColumnTool(),
 ]
 
 

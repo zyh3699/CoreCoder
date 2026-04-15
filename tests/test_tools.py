@@ -8,7 +8,7 @@ from corecoder.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
-    assert len(ALL_TOOLS) == 19
+    assert len(ALL_TOOLS) == 21
 
 
 def test_all_tools_have_valid_schema():
@@ -234,3 +234,15 @@ def test_invalidate_cache_tool_schema():
     tool = get_tool("invalidate_cache")
     s = tool.schema()
     assert s["function"]["name"] == "invalidate_cache"
+
+
+def test_materialize_subset_tool_schema():
+    tool = get_tool("materialize_subset")
+    s = tool.schema()
+    assert s["function"]["name"] == "materialize_subset"
+
+
+def test_embed_column_tool_schema():
+    tool = get_tool("embed_column")
+    s = tool.schema()
+    assert s["function"]["name"] == "embed_column"

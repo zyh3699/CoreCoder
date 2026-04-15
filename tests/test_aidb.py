@@ -12,6 +12,8 @@ import pytest
 
 from corecoder.db.workspace import Workspace, set_workspace, reset_workspace
 from corecoder.tools import get_tool
+import corecoder.tools.sample_rows as sample_rows_mod
+import corecoder.tools.assign_taxonomy as assign_taxonomy_mod
 
 
 # --- fixtures ---
@@ -130,6 +132,8 @@ class WorkflowLLM:
         row_text = user.split("Row text:\n", 1)[-1]
         lowered = row_text.lower()
         if 'Allowed taxonomy pairs:' in user:
+            if '"__skip__"' in user and "great" in lowered:
+                return json.dumps({"value": "__skip__"})
             if "itch" in lowered or "sting" in lowered:
                 return json.dumps({"value": {"parent": "safety_irritation", "child": "stinging_allergy"}})
             if "sticky" in lowered or "greasy" in lowered or "heavy" in lowered:
@@ -138,6 +142,8 @@ class WorkflowLLM:
             if "expensive" in lowered or "worth" in lowered or "price" in lowered:
                 return json.dumps({"value": {"parent": "expectation_gap", "child": "not_worth_price"}})
             return json.dumps({"value": {"parent": "usage_issues", "child": "other"}})
+        if "Target polarity: negative" in user and "great" in lowered:
+            return json.dumps({"value": "__skip__"})
         if "allergy" in lowered or "itch" in lowered or "sting" in lowered:
             label = "irritation"
         elif "sticky" in lowered or "pilling" in lowered or "greasy" in lowered:
@@ -476,6 +482,41 @@ def test_discover_issue_phrases(workspace, complaint_posts_csv):
     assert '"label": "stinging_allergy"' in out
 
 
+def test_assign_taxonomy_skips_off_polarity_rows(workspace, tmp_path):
+    p = tmp_path / "mixed.csv"
+    p.write_text(
+        "id,content,sentiment\n"
+        "1,This cream is great and absorbs well,neg\n"
+        "2,Way too expensive for the effect,neg\n"
+        "3,My skin started to sting and itch,neg\n"
+    )
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(p), table_name="posts")
+    out = get_tool("assign_taxonomy").execute(
+        table="posts",
+        text_column="content",
+        new_column="issue_phrase",
+        goal="negative_issue_phrases",
+        taxonomy=["texture_issue", "irritation", "value", "other"],
+        category_definitions={
+            "texture_issue": "Sticky, greasy, heavy, or pilling texture complaints",
+            "irritation": "Stinging, allergy, redness, or irritation complaints",
+            "value": "Too expensive or not worth the price",
+            "other": "Anything else",
+        },
+        where="sentiment = 'neg'",
+        rerun_mode="refresh",
+    )
+    assert 'errors (NULL):' in out
+    sql = get_tool("sql_query")
+    agg = sql.execute(
+        query="SELECT issue_phrase, COUNT(*) AS n FROM posts GROUP BY 1 ORDER BY n DESC"
+    )
+    assert "value" in agg
+    assert "irritation" in agg
+    assert "NULL" in agg
+
+
 def test_cache_status_and_invalidate_cache(workspace, complaint_posts_csv):
     workspace.llm = WorkflowLLM()
     get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
@@ -502,3 +543,75 @@ def test_cache_status_and_invalidate_cache(workspace, complaint_posts_csv):
     assert "Deleted cache rows:" in cleared
     out2 = status.execute(table="posts", column="issue_phrase")
     assert "No matching cache entries" in out2
+
+
+def test_materialize_subset(workspace, complaint_posts_csv):
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+    tool = get_tool("materialize_subset")
+    out = tool.execute(
+        source_table="posts",
+        new_table="neg_posts",
+        where="sentiment = 'neg'",
+    )
+    assert "Materialized subset 'neg_posts'" in out
+    assert "4 rows" in out
+    assert "neg_posts" in workspace.tables
+
+
+def test_sample_rows_diverse(monkeypatch, workspace, complaint_posts_csv):
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+
+    def fake_encode(texts, model_name=None):
+        return [[float(i), 0.0] for i, _ in enumerate(texts)]
+
+    monkeypatch.setattr(sample_rows_mod, "encode_texts", fake_encode)
+    out = get_tool("sample_rows").execute(
+        table="posts",
+        sample_size=2,
+        where="sentiment = 'neg'",
+        method="diverse",
+        text_column="content",
+        columns=["content"],
+    )
+    assert "method=diverse" in out
+    assert "Diverse sampling via embeddings" in out
+
+
+def test_assign_taxonomy_embed_then_llm(monkeypatch, workspace, complaint_posts_csv):
+    workspace.llm = WorkflowLLM()
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+
+    def fake_encode(texts, model_name=None):
+        vecs = []
+        for text in texts:
+            lower = text.lower()
+            if "sticky" in lower or "pilling" in lower or "greasy" in lower or "heavy" in lower:
+                vecs.append([1.0, 0.0, 0.0])
+            elif "itch" in lower or "sting" in lower:
+                vecs.append([0.0, 1.0, 0.0])
+            else:
+                vecs.append([0.0, 0.0, 1.0])
+        return vecs
+
+    monkeypatch.setattr(assign_taxonomy_mod, "encode_texts", fake_encode)
+    out = get_tool("assign_taxonomy").execute(
+        table="posts",
+        text_column="content",
+        new_column="issue_phrase",
+        goal="negative_issue_phrases",
+        taxonomy=["texture_issue", "irritation", "value"],
+        category_definitions={
+            "texture_issue": "sticky greasy heavy pilling texture",
+            "irritation": "sting itch allergy irritation",
+            "value": "expensive not worth the price",
+        },
+        where="sentiment = 'neg'",
+        routing_mode="embed_then_llm",
+        confidence_threshold=0.8,
+    )
+    assert "embed assigns:" in out
+    sql = get_tool("sql_query")
+    agg = sql.execute(
+        query="SELECT issue_phrase, COUNT(*) AS n FROM posts WHERE sentiment = 'neg' GROUP BY 1 ORDER BY n DESC"
+    )
+    assert "texture_issue" in agg

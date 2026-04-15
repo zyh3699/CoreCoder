@@ -103,6 +103,7 @@ class DiscoverIssuePhrasesTool(Tool):
             return f"Error: column '{parent_angle_column}' not in table '{table}'"
         if parent_angle_value and not parent_angle_column:
             return "Error: parent_angle_column is required when parent_angle_value is provided"
+        target_polarity = _infer_target_polarity(goal, where, parent_angle_value)
 
         note = ""
         order_clause = " ORDER BY random()"
@@ -144,6 +145,7 @@ class DiscoverIssuePhrasesTool(Tool):
             {
                 "goal": goal,
                 "phrase_style": phrase_style,
+                "target_polarity": target_polarity,
                 "max_phrases": max_phrases,
                 "include_other": include_other,
                 "text_column": text_column,
@@ -155,8 +157,11 @@ class DiscoverIssuePhrasesTool(Tool):
                     "Use short canonical phrases, usually 2-6 words or a short phrase in the source language.",
                     "Group near-synonyms and wording variants under one canonical phrase.",
                     "Do not output broad buckets like general commentary, product mention, or user reaction unless the goal explicitly asks for them.",
-                    "For canonical_issue, prefer actionable problems such as pilling, irritation, hard to absorb, or not worth the price.",
-                    "If include_other is true, add an 'other' fallback phrase only after proposing the concrete recurring phrases.",
+                    "If target_polarity is provided, ignore sampled rows that are clearly outside that polarity instead of letting them shape the discovered phrases.",
+                    "For canonical_issue, prefer actionable problems and concrete user-language failure modes rather than abstract summaries.",
+                    "Cover as much of the on-target sample as possible with concrete phrases before using 'other'.",
+                    "If include_other is true, add an 'other' fallback phrase only after proposing the concrete recurring phrases, and only for residual minority cases.",
+                    "Do not let 'other' stand in for generic non-specific chatter; if rows lack a clear issue, leave them unrepresented rather than turning that into a dominant phrase.",
                     "Return example_rids that point to the sampled rows supporting each phrase.",
                 ],
             },
@@ -242,3 +247,12 @@ class DiscoverIssuePhrasesTool(Tool):
             "If these canonical phrases look right, convert them into a closed taxonomy and run assign_taxonomy over the full target set.",
         ]
         return "\n".join(lines)
+
+
+def _infer_target_polarity(goal: str, where: str | None, parent_angle_value: str | None) -> str | None:
+    text = " ".join(x for x in [goal, where or "", parent_angle_value or ""]).lower()
+    if any(tok in text for tok in ["negative", "complaint", "pain", "neg", "label_0", "吐槽", "负面", "差评"]):
+        return "negative"
+    if any(tok in text for tok in ["positive", "praise", "selling", "pos", "label_2", "label_1", "正面", "卖点", "好评"]):
+        return "positive"
+    return None

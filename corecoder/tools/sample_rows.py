@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .base import Tool
 from ..db.workspace import get_workspace
+from ..db.embeddings import DEFAULT_EMBED_MODEL, diverse_sample_indices, encode_texts
 from .sql_query import format_table
 
 _DEFAULT_PREVIEW = 10
@@ -45,6 +46,14 @@ class SampleRowsTool(Tool):
                 "type": "string",
                 "description": "Column used when method='stratified'",
             },
+            "text_column": {
+                "type": "string",
+                "description": "Text column used for diverse sampling embeddings",
+            },
+            "embedding_model": {
+                "type": "string",
+                "description": f"Sentence-transformer model for diverse sampling. Default: {DEFAULT_EMBED_MODEL}",
+            },
         },
         "required": ["table", "sample_size"],
     }
@@ -57,6 +66,8 @@ class SampleRowsTool(Tool):
         method: str = "random",
         columns: list[str] | None = None,
         stratify_by: str | None = None,
+        text_column: str | None = None,
+        embedding_model: str = DEFAULT_EMBED_MODEL,
     ) -> str:
         ws = get_workspace()
         if table not in ws.tables:
@@ -88,8 +99,12 @@ class SampleRowsTool(Tool):
             order_clause = f' ORDER BY "{stratify_by}", random()'
             note = "Stratified mode currently preserves strata ordering but does not enforce equal quotas."
         elif method == "diverse":
-            order_clause = " ORDER BY random()"
-            note = "Diverse sampling will use embeddings in a later phase. Falling back to random sampling for now."
+            order_clause = None
+            if text_column is None:
+                return "Error: text_column is required when method='diverse'"
+            if text_column not in existing:
+                return f"Error: column '{text_column}' not in table '{table}'"
+            note = f"Diverse sampling via embeddings on column '{text_column}'"
         else:
             return "Error: method must be one of random, diverse, stratified"
 
@@ -98,11 +113,24 @@ class SampleRowsTool(Tool):
         if total == 0:
             return "Error: filter returned 0 rows - nothing to sample"
 
-        sample_q = (
-            f"SELECT {col_list} {from_clause}{where_clause}"
-            f"{order_clause} LIMIT ?"
-        )
-        rows = ws.conn.execute(sample_q, [int(sample_size)]).fetchall()
+        if method == "diverse":
+            sample_q = f'SELECT _rid, "{text_column}", {col_list} {from_clause}{where_clause}'
+            raw_rows = ws.conn.execute(sample_q).fetchall()
+            if not raw_rows:
+                return "Error: filter returned 0 rows - nothing to sample"
+            texts = ["" if r[1] is None else str(r[1]) for r in raw_rows]
+            try:
+                vecs = encode_texts(texts, model_name=embedding_model)
+            except Exception as e:
+                return f"Embedding error: {e}"
+            picked = diverse_sample_indices(vecs, int(sample_size))
+            rows = [raw_rows[i][2:] for i in picked]
+        else:
+            sample_q = (
+                f"SELECT {col_list} {from_clause}{where_clause}"
+                f"{order_clause} LIMIT ?"
+            )
+            rows = ws.conn.execute(sample_q, [int(sample_size)]).fetchall()
         shown = rows[:_DEFAULT_PREVIEW]
         preview = format_table(["_rid"] + columns, shown, truncated=len(rows) > len(shown))
 

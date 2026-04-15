@@ -8,6 +8,7 @@ from collections import Counter
 
 from .base import Tool
 from ..db.workspace import get_workspace
+from ..db.embeddings import DEFAULT_EMBED_MODEL, cosine_similarity, encode_texts
 
 _MAX_WORKERS = 8
 
@@ -72,6 +73,14 @@ class AssignTaxonomyTool(Tool):
                 "enum": ["llm_only", "embed_then_llm", "embed_only"],
                 "description": "Phase one fully supports llm_only; the other modes fall back with a note.",
             },
+            "embedding_model": {
+                "type": "string",
+                "description": f"Sentence-transformer model used when routing_mode is embedding-based. Default: {DEFAULT_EMBED_MODEL}",
+            },
+            "confidence_threshold": {
+                "type": "number",
+                "description": "Minimum cosine similarity for high-confidence embedding assignment. Default 0.55.",
+            },
             "sample_size": {
                 "type": "integer",
                 "description": "Dry-run mode: classify this many rows only and do not write the column.",
@@ -98,6 +107,8 @@ class AssignTaxonomyTool(Tool):
         new_column_child: str | None = None,
         where: str | None = None,
         routing_mode: str = "llm_only",
+        embedding_model: str = DEFAULT_EMBED_MODEL,
+        confidence_threshold: float = 0.55,
         sample_size: int | None = None,
         rerun_mode: str = "reuse",
     ) -> str:
@@ -116,10 +127,14 @@ class AssignTaxonomyTool(Tool):
             return "Error: rerun_mode must be one of reuse, refresh, no_write_cache"
 
         note = ""
+        target_polarity = _infer_target_polarity(goal, where)
         if routing_mode == "llm_only":
             pass
         elif routing_mode in {"embed_then_llm", "embed_only"}:
-            note = f"Routing mode '{routing_mode}' will use embeddings in a later phase. Falling back to llm_only for now."
+            note = (
+                f"Routing mode '{routing_mode}' will use embeddings first with model "
+                f"'{embedding_model}' and threshold {confidence_threshold:.2f}."
+            )
         else:
             return "Error: routing_mode must be one of llm_only, embed_then_llm, embed_only"
 
@@ -171,6 +186,54 @@ class AssignTaxonomyTool(Tool):
 
         results = dict(hits)
         errors = 0
+        embed_assigned = 0
+        if work and routing_mode in {"embed_then_llm", "embed_only"}:
+            try:
+                work_texts = [text for _, text, _ in work]
+                row_vecs = encode_texts(work_texts, model_name=embedding_model)
+                proto_texts = _prototype_texts(parsed)
+                proto_vecs = encode_texts(proto_texts, model_name=embedding_model)
+                proto_items = parsed["labels"] if parsed["shape"] == "flat" else parsed["items"]
+                remaining: list[tuple[int, str, str]] = []
+                for (rid, text, key), row_vec in zip(work, row_vecs):
+                    sims = [cosine_similarity(row_vec, pv) for pv in proto_vecs]
+                    best_idx = max(range(len(sims)), key=sims.__getitem__)
+                    best_score = sims[best_idx]
+                    if best_score >= confidence_threshold:
+                        if parsed["shape"] == "flat":
+                            value = proto_items[best_idx]
+                        else:
+                            item = proto_items[best_idx]
+                            value = {"parent": item["parent"], "child": item["child"]}
+                        results[rid] = value
+                        embed_assigned += 1
+                        if rerun_mode != "no_write_cache":
+                            cache_col = new_column if taxonomy_shape == "flat" else f"{new_column_parent}|{new_column_child}"
+                            ws.cache.put(
+                                key,
+                                table,
+                                cache_col,
+                                str(rid),
+                                value,
+                                model,
+                                tool_name=self.name,
+                                goal=goal,
+                                schema_hash=schema_hash,
+                                prompt_preview=f"{goal} [embed]",
+                                source_columns=source_cols_str,
+                            )
+                    else:
+                        remaining.append((rid, text, key))
+                work = remaining
+            except Exception as e:
+                note += f" Embedding routing fallback to llm_only due to: {e}"
+
+        if routing_mode == "embed_only":
+            for rid, _, _ in work:
+                results[rid] = None
+            errors += len(work)
+            work = []
+
         if work:
             with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
                 future_map = {
@@ -180,6 +243,7 @@ class AssignTaxonomyTool(Tool):
                         text,
                         goal,
                         parsed,
+                        target_polarity,
                     ): (rid, key)
                     for rid, text, key in work
                 }
@@ -219,7 +283,7 @@ class AssignTaxonomyTool(Tool):
             lines = [
                 f"[DRY RUN - {len(rows)} rows previewed, column NOT written]",
                 f"Goal: {goal}",
-                f"  cache hits: {len(hits)}   llm calls: {len(work)}   errors: {errors}",
+                f"  cache hits: {len(hits)}   embed assigns: {embed_assigned}   llm calls: {len(work)}   errors: {errors}",
             ]
             if note:
                 lines.append(note)
@@ -282,7 +346,7 @@ class AssignTaxonomyTool(Tool):
             lines = [
                 f'Wrote column "{new_column}" into "{table}": {len(rows)} rows',
                 f"Goal: {goal}",
-                f"  cache hits: {len(hits)}   llm calls: {len(work)}   errors (NULL): {errors}",
+                f"  cache hits: {len(hits)}   embed assigns: {embed_assigned}   llm calls: {len(work)}   errors (NULL): {errors}",
             ]
         else:
             parent_dist = Counter(
@@ -292,7 +356,7 @@ class AssignTaxonomyTool(Tool):
             lines = [
                 f'Wrote hierarchical columns "{new_column_parent}" and "{new_column_child}" into "{table}": {len(rows)} rows',
                 f"Goal: {goal}",
-                f"  cache hits: {len(hits)}   llm calls: {len(work)}   errors (NULL): {errors}",
+                f"  cache hits: {len(hits)}   embed assigns: {embed_assigned}   llm calls: {len(work)}   errors (NULL): {errors}",
                 "Parent distribution: " + ", ".join(f"{k}={v}" for k, v in parent_dist.most_common()),
             ]
         if note:
@@ -312,7 +376,7 @@ class AssignTaxonomyTool(Tool):
         return "\n".join(lines)
 
     @staticmethod
-    def _label_one(llm, text: str, goal: str, parsed: dict) -> object | None:
+    def _label_one(llm, text: str, goal: str, parsed: dict, target_polarity: str | None) -> object | None:
         system = (
             "You assign one row into a closed taxonomy for analytics. "
             "Output ONLY a single valid JSON object with key 'value'."
@@ -320,7 +384,8 @@ class AssignTaxonomyTool(Tool):
         if parsed["shape"] == "flat":
             schema_note = (
                 f'Respond with JSON: {{"value": <one of {parsed["labels"]}>}}. '
-                "Pick exactly one label. If none fits, choose 'other' when available."
+                "Pick exactly one label. If none fits, choose 'other' when available. "
+                "Use 'other' only as a last resort after considering the most specific non-other label."
             )
             defs = "\n".join(
                 f"- {label}: {parsed['definitions'][label]}"
@@ -329,8 +394,11 @@ class AssignTaxonomyTool(Tool):
             ) or "(no category definitions provided)"
             user = (
                 f"Goal: {goal}\n"
+                f"Target polarity: {target_polarity or 'unspecified'}\n"
                 f"Allowed labels: {parsed['labels']}\n"
                 f"Definitions:\n{defs}\n\n"
+                "If the row is clearly outside the target polarity, respond with "
+                'JSON {"value": "__skip__"} instead of forcing a bad label.\n\n'
                 f"{schema_note}\n\n"
                 f"Row text:\n{text}"
             )
@@ -338,7 +406,8 @@ class AssignTaxonomyTool(Tool):
             schema_note = (
                 'Respond with JSON: {"value": {"parent": <parent_label>, "child": <child_label>}}. '
                 "Pick exactly one parent/child pair from the allowed taxonomy. "
-                "If nothing fits, choose the most appropriate 'other' branch when available."
+                "If nothing fits, choose the most appropriate 'other' branch when available. "
+                "Use the 'other' branch only as a last resort after considering specific branches."
             )
             defs = "\n".join(
                 f"- {item['parent']} -> {item['child']}: {item['definition']}"
@@ -346,7 +415,10 @@ class AssignTaxonomyTool(Tool):
             )
             user = (
                 f"Goal: {goal}\n"
+                f"Target polarity: {target_polarity or 'unspecified'}\n"
                 f"Allowed taxonomy pairs:\n{defs}\n\n"
+                "If the row is clearly outside the target polarity, respond with "
+                'JSON {"value": "__skip__"} instead of forcing a bad label.\n\n'
                 f"{schema_note}\n\n"
                 f"Row text:\n{text}"
             )
@@ -354,7 +426,11 @@ class AssignTaxonomyTool(Tool):
         obj = json.loads(raw)
         val = obj.get("value") if isinstance(obj, dict) else None
         if parsed["shape"] == "flat":
+            if val == "__skip__":
+                return None
             return val if val in parsed["labels"] else None
+        if val == "__skip__":
+            return None
         if not isinstance(val, dict):
             return None
         parent = str(val.get("parent", "")).strip()
@@ -402,3 +478,25 @@ def _parse_taxonomy(taxonomy: list, taxonomy_shape: str, category_definitions: d
         "definitions": category_definitions,
         "cache_payload": items,
     }
+
+
+def _prototype_texts(parsed: dict) -> list[str]:
+    if parsed["shape"] == "flat":
+        texts = []
+        for label in parsed["labels"]:
+            definition = parsed["definitions"].get(label, "")
+            texts.append(f"{label}. {definition}".strip())
+        return texts
+    return [
+        f"{item['parent']}. {item['child']}. {item['definition']}".strip()
+        for item in parsed["items"]
+    ]
+
+
+def _infer_target_polarity(goal: str, where: str | None) -> str | None:
+    text = " ".join([goal, where or ""]).lower()
+    if any(tok in text for tok in ["negative", "complaint", "neg", "label_0", "吐槽", "负面", "差评"]):
+        return "negative"
+    if any(tok in text for tok in ["positive", "praise", "selling", "pos", "label_2", "label_1", "正面", "卖点", "好评"]):
+        return "positive"
+    return None
