@@ -181,6 +181,38 @@ class LLM:
             completion_tokens=completion_tok,
         )
 
+    def complete_json(self, system: str, user: str) -> str:
+        """One-shot non-streaming call that forces JSON output.
+
+        Used by derive_column to get a parseable per-row label.  Falls back to
+        a plain call if the provider rejects response_format (some OSS
+        gateways don't implement it).
+        """
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        params: dict = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        for k, v in self.extra.items():
+            params.setdefault(k, v)
+
+        try:
+            resp = self._call_with_retry(params)
+        except APIError:
+            params.pop("response_format", None)
+            resp = self._call_with_retry(params)
+
+        usage = getattr(resp, "usage", None)
+        if usage:
+            self.total_prompt_tokens += usage.prompt_tokens
+            self.total_completion_tokens += usage.completion_tokens
+        return resp.choices[0].message.content or ""
+
     def _call_with_retry(self, params: dict, max_retries: int = 3):
         """Retry on transient errors with exponential backoff."""
         for attempt in range(max_retries):

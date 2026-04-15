@@ -16,6 +16,7 @@ from .tools.base import Tool
 from .tools.agent import AgentTool
 from .prompt import system_prompt
 from .context import ContextManager
+from .db.workspace import get_workspace
 
 
 class Agent:
@@ -37,6 +38,12 @@ class Agent:
         for t in self.tools:
             if isinstance(t, AgentTool):
                 t._parent_agent = self
+
+        # share our LLM with the AI-DB workspace so derive_column can call it.
+        # sub-agents inherit the same workspace via the get_workspace() singleton,
+        # which is what we want - they operate on the same loaded tables.
+        self.workspace = get_workspace()
+        self.workspace.llm = self.llm
 
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._system}] + self.messages

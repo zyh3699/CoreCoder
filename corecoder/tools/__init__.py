@@ -7,6 +7,12 @@ from .edit import EditFileTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
+from .load_table import LoadTableTool
+from .sql_query import SqlQueryTool
+from .derive_column import DeriveColumnTool
+from .export_table import ExportTableTool
+from .classify_column import ClassifyColumnTool
+from .discover_topics import DiscoverTopicsTool
 
 ALL_TOOLS = [
     BashTool(),
@@ -16,6 +22,13 @@ ALL_TOOLS = [
     GlobTool(),
     GrepTool(),
     AgentTool(),
+    # AI-DB tools: load tables, then answer either via SQL or via LLM-derived columns.
+    LoadTableTool(),
+    SqlQueryTool(),
+    DeriveColumnTool(),
+    ExportTableTool(),
+    ClassifyColumnTool(),
+    DiscoverTopicsTool(),
 ]
 
 
