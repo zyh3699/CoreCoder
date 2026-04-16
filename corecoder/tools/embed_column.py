@@ -14,7 +14,8 @@ class EmbedColumnTool(Tool):
     description = (
         "Generate local embeddings for a text column and write them back as a JSON "
         "string column. Useful for reuse across diverse sampling, nearest-neighbor "
-        "assignment, and drill-down workflows."
+        "assignment, and drill-down workflows. Prefer this for large tables or "
+        "multi-step analyses where the same text slice will be reused."
     )
     parameters = {
         "type": "object",

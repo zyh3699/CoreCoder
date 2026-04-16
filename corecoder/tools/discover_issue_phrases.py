@@ -14,7 +14,9 @@ class DiscoverIssuePhrasesTool(Tool):
         "Inspect a sample of rows and propose concrete canonical phrases such as "
         "'pilling', 'stinging', or 'not worth the price'. Use this when the user "
         "wants the final talking angles to be short, user-language issue phrases "
-        "rather than broad analytical categories."
+        "rather than broad analytical categories. Best paired with diverse sampling "
+        "and later assign_taxonomy over the relevant subset. Prefer running it on a "
+        "materialized sample table instead of a large raw table."
     )
     parameters = {
         "type": "object",

@@ -13,7 +13,8 @@ class DiscoverTaxonomyTool(Tool):
     description = (
         "Inspect a sample of rows and propose a closed taxonomy for a semantic "
         "analysis goal such as complaint angles, positive selling points, "
-        "usage scenarios, or purchase motives. Returns candidate categories, "
+        "usage scenarios, or purchase motives. Best run on an already scoped or "
+        "sampled table when the source set is large. Returns candidate categories, "
         "definitions, and a suggested follow-up assignment prompt."
     )
     parameters = {

@@ -12,7 +12,8 @@ class MaterializeSubsetTool(Tool):
     description = (
         "Create a new table from a filtered subset of an existing table. Use this "
         "when the user wants to keep drilling into one angle or segment without "
-        "polluting the original full table with more columns."
+        "polluting the original full table with more columns. This should often be "
+        "the first step before deeper discovery on one angle, product, brand, or time slice."
     )
     parameters = {
         "type": "object",

@@ -577,6 +577,25 @@ def test_sample_rows_diverse(monkeypatch, workspace, complaint_posts_csv):
     assert "Diverse sampling via embeddings" in out
 
 
+def test_sample_rows_materializes_sample_table(monkeypatch, workspace, complaint_posts_csv):
+    get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
+
+    def fake_encode(texts, model_name=None):
+        return [[float(i), 0.0] for i, _ in enumerate(texts)]
+
+    monkeypatch.setattr(sample_rows_mod, "encode_texts", fake_encode)
+    out = get_tool("sample_rows").execute(
+        table="posts",
+        sample_size=2,
+        where="sentiment = 'neg'",
+        method="diverse",
+        text_column="content",
+        new_table="posts_sample",
+    )
+    assert "Materialized sample table: posts_sample" in out
+    assert "posts_sample" in workspace.tables
+
+
 def test_assign_taxonomy_embed_then_llm(monkeypatch, workspace, complaint_posts_csv):
     workspace.llm = WorkflowLLM()
     get_tool("load_table").execute(file_path=str(complaint_posts_csv), table_name="posts")
